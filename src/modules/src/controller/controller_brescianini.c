@@ -72,6 +72,9 @@ static float coll_max = 18;
 // 0 -> z gets what it wants (eg. maintain height at all costs)
 static float thrust_reduction_fairness = 0.25;
 
+// vehicle mass including payload (decks) [kg]
+static float mass = CF_MASS;
+
 // minimum and maximum body rates
 static float omega_rp_max = 30;
 static float omega_yaw_max = 10;
@@ -393,7 +396,7 @@ void controllerBrescianini(control_t *control,
     // update the commanded body torques based on the current error in body rates
     control_torque = mvmul(CRAZYFLIE_INERTIA, omegaErr);
 
-    control->thrustSi = control_thrust * CF_MASS; // force to provide control_thrust
+    control->thrustSi = control_thrust * mass; // force to provide control_thrust
     control->torqueX = control_torque.x;
     control->torqueY = control_torque.y;
     control->torqueZ = control_torque.z;
@@ -415,6 +418,10 @@ PARAM_ADD(PARAM_FLOAT, zeta_z, &zeta_z)
 PARAM_ADD(PARAM_FLOAT, tau_rp, &tau_rp)
 PARAM_ADD(PARAM_FLOAT, mixing_factor, &mixing_factor)
 PARAM_ADD(PARAM_FLOAT, coll_fairness, &thrust_reduction_fairness)
+/**
+ * @brief Vehicle mass including decks [kg]
+ */
+PARAM_ADD(PARAM_FLOAT | PARAM_PERSISTENT, mass, &mass)
 // PARAM_ADD(PARAM_FLOAT, heuristic_rp, &heuristic_rp)
 // PARAM_ADD(PARAM_FLOAT, heuristic_yaw, &heuristic_yaw)
 // PARAM_ADD(PARAM_FLOAT, tau_rp_rate, &tau_rp_rate)

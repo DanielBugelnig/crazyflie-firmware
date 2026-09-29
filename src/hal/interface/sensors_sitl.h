@@ -42,4 +42,13 @@ bool sensorsSimReadMag(Axis3f *mag);
 bool sensorsSimReadBaro(baro_t *baro);
 void sensorsSimSetAccMode(accModes accMode);
 
+// Deck presence reported by the simulator (implemented in deck_sitl.c)
+#define SITL_DECK_FLOW2        (1 << 0)
+#define SITL_DECK_MULTIRANGER  (1 << 1)
+#define SITL_DECK_AI           (1 << 2)
+void deckSitlSetPresent(uint8_t decks);
+
+// Raw PMW3901 motion burst from the simulator (implemented in flowdeck_sitl.c)
+void flowdeckSitlProcess(const uint8_t *data);
+
 #endif // __SENSORS_SIM_H__

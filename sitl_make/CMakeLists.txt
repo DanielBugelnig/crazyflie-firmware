@@ -128,6 +128,7 @@ set(SRCS
 
   # SITL deck stub (exposes deck parameters for cfclient)
   ${CF2_SITL_SRCS_DIR}/deck/drivers/src/deck_sitl.c
+  ${CF2_SITL_SRCS_DIR}/deck/drivers/src/flowdeck_sitl.c
 
   #LED SITL stubs
   ${CF2_SITL_SRCS_DIR}/drivers/src/led_sitl.c

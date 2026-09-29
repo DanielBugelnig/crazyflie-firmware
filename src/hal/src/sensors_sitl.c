@@ -54,7 +54,7 @@ extern int8_t simPmState;
 // We try to be as close as possible from the real sensor implementation
 #define MAG_GAUSS_PER_LSB                                 666.7f
 #define SENSORS_DEG_PER_LSB_CFG                           (float)((2 * 2000.0) / 65536.0)
-#define SENSORS_G_PER_LSB_CFG                             (float)((2 * 16) / 65536.0)
+#define SENSORS_G_PER_LSB_CFG                             (float)((2 * 24) / 65536.0) // +-24 g like the BMI088 driver
 
 #define SENSORS_BIAS_SAMPLES                              2000
 #define SENSORS_ACC_SCALE_SAMPLES                         1000
@@ -67,8 +67,8 @@ extern int8_t simPmState;
 // Number of samples used in variance calculation. Changing this effects the threshold
 #define SENSORS_NBR_OF_BIAS_SAMPLES                       1024
 
-// Variance threshold to take zero bias for gyro
-#define GYRO_VARIANCE_BASE                                5000
+// Variance threshold to take zero bias for gyro (same as sensors_bmi088_bmp3xx.c)
+#define GYRO_VARIANCE_BASE                                100
 #define GYRO_VARIANCE_THRESHOLD_X                         (GYRO_VARIANCE_BASE)
 #define GYRO_VARIANCE_THRESHOLD_Y                         (GYRO_VARIANCE_BASE)
 #define GYRO_VARIANCE_THRESHOLD_Z                         (GYRO_VARIANCE_BASE)
@@ -82,6 +82,8 @@ enum SensorTypeSim_e {
   SENSOR_BATT_SIM               = 4,
   SENSOR_TOF_SIM                = 5,
   SENSOR_FLOW_SIM               = 6,
+  SENSOR_DECK_SIM               = 7,
+  SENSOR_FLOW_RAW_SIM           = 8,
 };
 
 typedef struct
@@ -200,9 +202,11 @@ static void sensorsTask(void *param)
   {
     // Wait for a new sensor message to arrive
     crtpReceivePacketBlock(CRTP_PORT_SETPOINT_SIM, &p);
+    bool imuUpdate = false;
     switch (p.data[0])
     {
       case SENSOR_GYRO_ACC_SIM:
+        imuUpdate = true;
         processAccGyroMeasurements(&(p.data[1]));
         measurement.type = MeasurementTypeAcceleration;
         measurement.data.acceleration.acc = sensors.acc;
@@ -232,7 +236,7 @@ static void sensorsTask(void *param)
         float distance;
         memcpy(&distance, &p.data[1], sizeof(float));
         rangeSet(rangeDown, distance);
-        if (distance > 0.01f && distance < 5.0f) {
+        if (distance >= 0.0f && distance < 5.0f) { // RANGE_OUTLIER_LIMIT in zranger2.c
           // Exponential noise model matching VL53L1x (zranger2.c)
           static const float expPointA = 2.5f;
           static const float expStdA   = 0.0025f;
@@ -256,6 +260,13 @@ static void sensorsTask(void *param)
         estimatorEnqueueFlow(&flowData);
         break;
       }
+      case SENSOR_FLOW_RAW_SIM:
+        // Raw PMW3901 output, processed like the real flow deck driver
+        flowdeckSitlProcess(&p.data[1]);
+        break;
+      case SENSOR_DECK_SIM:
+        deckSitlSetPresent(p.data[1]);
+        break;
       case SENSOR_BATT_SIM:
       {
         float voltage;
@@ -276,7 +287,12 @@ static void sensorsTask(void *param)
       lastGyroBiasFound =  gyroBiasFound;
       crtpSendPacket(&p);
     }
-    xSemaphoreGive(dataReady);
+    // Like the real sensors task, only new IMU data runs the stabilizer loop:
+    // its rates count loop iterations at 1 kHz. Baro, range, ToF and flow data
+    // reach the queues and the estimator without an extra iteration.
+    if (imuUpdate) {
+      xSemaphoreGive(dataReady);
+    }
   }
 }
 
