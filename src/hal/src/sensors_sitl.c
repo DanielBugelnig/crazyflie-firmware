@@ -104,6 +104,12 @@ static xSemaphoreHandle dataReady;
 static bool isInit = false;
 static sensorData_t sensors;
 
+// Gazebo simulation time of the newest IMU sample (stamp_us in the packet), and of the sample
+// last handed to the stabilizer, which is what the acc/gyro log variables show
+static uint64_t imuSimStampUs;
+static uint32_t imuSimStampSec;
+static uint32_t imuSimStampUsec;
+
 static BiasObj gyroBiasRunning;
 static Axis3f  gyroBias;
 #if defined(SENSORS_GYRO_BIAS_CALCULATE_STDDEV) && defined (GYRO_BIAS_LIGHT_WEIGHT)
@@ -177,7 +183,11 @@ bool sensorsSimReadBaro(baro_t *baro)
 
 void sensorsSimAcquire(sensorData_t *sensors)
 {
-  sensorsReadGyro(&sensors->gyro);
+  if (sensorsReadGyro(&sensors->gyro)) {
+    // The stamp belongs to the gyro/acc sample read here, so a log block sees them together
+    imuSimStampSec = (uint32_t)(imuSimStampUs / 1000000ULL);
+    imuSimStampUsec = (uint32_t)(imuSimStampUs % 1000000ULL);
+  }
   sensorsReadAcc(&sensors->acc);
   sensorsReadMag(&sensors->mag);
   sensorsReadBaro(&sensors->baro);
@@ -339,6 +349,8 @@ void processAccGyroMeasurements(const uint8_t *buffer)
   const Axis3i16 *accData = (Axis3i16 *) buffer;
   //(real value in deg / SENSORS_DEG_PER_LSB_CFG) from gazebo SIM
   const Axis3i16 *gyroData = (Axis3i16 *) (buffer + sizeof(Axis3i16));
+  // Gazebo simulation time of the sample (little endian uint64 behind gyro)
+  memcpy(&imuSimStampUs, buffer + 2 * sizeof(Axis3i16), sizeof(imuSimStampUs));
 
 
 #ifdef GYRO_BIAS_LIGHT_WEIGHT
@@ -715,6 +727,20 @@ LOG_ADD(LOG_FLOAT, yVariance, &gyroBiasRunning.variance.y)
 LOG_ADD(LOG_FLOAT, zVariance, &gyroBiasRunning.variance.z)
 LOG_GROUP_STOP(gyro)
 #endif
+
+/**
+ * Gazebo simulation time of the IMU sample behind acc.* and gyro.* (SITL only)
+ */
+LOG_GROUP_START(simStamp)
+/**
+ * @brief Whole seconds of the sample's simulation time
+ */
+LOG_ADD(LOG_UINT32, sec, &imuSimStampSec)
+/**
+ * @brief Microseconds within that second
+ */
+LOG_ADD(LOG_UINT32, usec, &imuSimStampUsec)
+LOG_GROUP_STOP(simStamp)
 
 PARAM_GROUP_START(imu_sensors)
 PARAM_ADD(PARAM_UINT8 | PARAM_RONLY, HMC5883L_SIM, &isMagnetometerPresent)
