@@ -39,6 +39,7 @@
 #include "semphr.h"
 #include "debug.h"
 #include "cfassert.h"
+#include "sim_clock.h"
 
 #include <stdlib.h>
 #include <netinet/in.h>
@@ -46,6 +47,10 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <poll.h>
+#include <pthread.h>
+#include <signal.h>
+#include <unistd.h>
+#include <fcntl.h>
 
 #include <errno.h>
 
@@ -55,6 +60,24 @@ static struct sockaddr_in remaddr;
 static socklen_t addrlen;
 static int fd;
 static struct pollfd fds[1];
+
+// Datagrams from Gazebo are read by a plain pthread outside FreeRTOS, which advances the simulation
+// clock that drives the FreeRTOS tick (sim_clock.h). A task cannot do this: socketlinkTask sleeps a
+// tick whenever the tick signal interrupts its poll(), and that tick would wait for the IMU sample the
+// task has not read yet. The thread hands each datagram to socketlinkTask through a pipe.
+typedef struct {
+  uint8_t len;
+  uint8_t raw[CRTP_MAX_DATA_SIZE + 1];
+} __attribute__((packed)) datagram_t;
+
+static int pipeFds[2];
+static pthread_t receiveThread;
+static volatile uint32_t pipeDropped;   // datagrams lost because socketlinkTask fell behind
+
+// IMU packet from the Gazebo plugin: CRTP header, sensor type 0 (gyro/acc), acc and gyro as 3 x int16,
+// then the simulation time of the sample in us (little endian uint64)
+#define SIM_IMU_TYPE 0
+#define SIM_IMU_STAMP_OFFSET (1 + 1 + 2 * 3 * sizeof(int16_t))
 
 
 static bool isInit = false;
@@ -75,9 +98,38 @@ static struct crtpLinkOperations socketlinkOp =
 static CRTPPacket p;
 static uint8_t socket_buff[33];
 
+static void *socketlinkReceiveThread(void *param)
+{
+  datagram_t d;
+  struct sockaddr_in from;
+  socklen_t fromlen;
+
+  while (1)
+  {
+    fromlen = sizeof(from);
+    int recvlen = recvfrom(fd, d.raw, sizeof(d.raw), 0, (struct sockaddr *)&from, &fromlen);
+    if (recvlen <= 0) {
+      continue;
+    }
+    d.len = recvlen;
+    if (write(pipeFds[1], &d, sizeof(d)) != sizeof(d)) {
+      pipeDropped++;
+    }
+    // Advance the clock after queueing the sample, so the tasks the tick wakes find it
+    if ((size_t)recvlen >= SIM_IMU_STAMP_OFFSET + sizeof(uint64_t) && (d.raw[0] >> 4) == CRTP_PORT_SETPOINT_SIM
+        && d.raw[1] == SIM_IMU_TYPE) {
+      uint64_t stampUs;
+      memcpy(&stampUs, &d.raw[SIM_IMU_STAMP_OFFSET], sizeof(stampUs));
+      vPortSetSimTimeUs(stampUs);
+    }
+  }
+  return NULL;
+}
+
 static void socketlinkTask(void *param)
 {
-  int recvlen;
+  datagram_t d;
+  uint32_t droppedReported = 0;
   while(1)
   {
     while (poll(&fds[0], (sizeof(fds[0]) / sizeof(fds[0])), -1) < 0){
@@ -88,16 +140,19 @@ static void socketlinkTask(void *param)
 
     // Check if any data was received
     if (fds[0].revents & POLLIN){
-      // Fetch a socket data
-      recvlen = recvfrom(fd, p.raw, sizeof(p.raw), 0, (struct sockaddr *)&remaddr, &addrlen);
-      if (recvlen > 0){
-        p.size = recvlen - 1; // We remove the header size
-        // xQueueSend(crtpPacketDelivery, &p, 0);
+      // Writes of whole records are atomic, so a read returns one record
+      if (read(pipeFds[0], &d, sizeof(d)) == sizeof(d)){
+        memcpy(p.raw, d.raw, d.len);
+        p.size = d.len - 1; // We remove the header size
         ASSERT(xQueueSend(crtpPacketDelivery, &p, 0) == pdPASS);
-      } else {
+      } else if (errno != EINTR) {
         DEBUG_PRINT("error : %s \n" , strerror(errno));
       }
-    } 
+    }
+    if (pipeDropped != droppedReported) {
+      droppedReported = pipeDropped;
+      DEBUG_PRINT("%lu packets from gazebo dropped (link task too slow)\n", (unsigned long)droppedReported);
+    }
   }
 
 }
@@ -214,6 +269,27 @@ void socketlinkInit()
   }
 
   DEBUG_PRINT("Connection established with gazebo \n");
+
+  // Pipe to socketlinkTask; the receive thread drops a datagram rather than block when it is full
+  if (pipe(pipeFds) < 0 || fcntl(pipeFds[1], F_SETFL, O_NONBLOCK) < 0) {
+    DEBUG_PRINT("cannot create pipe: %s\n", strerror(errno));
+    ASSERT_FAILED();
+    return;
+  }
+  fds[0].fd = pipeFds[0];
+
+  // The receive thread inherits the signal mask: FreeRTOS ticks (SIGALRM) and task switches must only
+  // reach task threads
+  sigset_t allSignals, taskSignals;
+  sigfillset(&allSignals);
+  pthread_sigmask(SIG_BLOCK, &allSignals, &taskSignals);
+  int err = pthread_create(&receiveThread, NULL, socketlinkReceiveThread, NULL);
+  pthread_sigmask(SIG_SETMASK, &taskSignals, NULL);
+  if (err) {
+    DEBUG_PRINT("cannot start receive thread: %s\n", strerror(err));
+    ASSERT_FAILED();
+    return;
+  }
 
 
   // Create RX queue and start socketlink task

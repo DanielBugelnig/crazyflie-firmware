@@ -77,7 +77,8 @@ set(FREERTOS_SRCS
    ${FREERTOS_SRC_DIR}/tasks.c
    ${FREERTOS_SRC_DIR}/timers.c
    ${FREERTOS_SRC_DIR}/croutine.c
-   ${FREERTOS_SRC_DIR}/portable/ThirdParty/GCC/Posix/port.c
+   # SITL copy of the Posix port: the tick follows the simulation clock
+   ${CMAKE_CURRENT_SOURCE_DIR}/freertos/port.c
    ${FREERTOS_SRC_DIR}/portable/ThirdParty/GCC/Posix/utils/wait_for_event.c
    ${FREERTOS_SRC_DIR}/portable/MemMang/heap_3.c
 )
